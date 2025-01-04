@@ -10,7 +10,7 @@ Standards-Version: 3.9.8
 
 Package: libdtkgui5
 Architecture: any
-Depends: ${shlibs:Depends}, ${misc:Depends}, libdtkdata,
+Depends: ${shlibs:Depends}, ${misc:Depends}, libdtkdata [!loong64 !riscv64],
  qt5-image-formats-plugins
 Multi-Arch: same
 Description: Deepin Tool Kit Gui library
