@@ -34,7 +34,7 @@ Copyright: None
 License: LGPL-3.0-or-later
 
 # README
-Files: *README.md *README.zh_CN.md
+Files: *README.md *README.zh_CN.md CHANGELOG.md
 Copyright: None
 License:  CC-BY-4.0
 
@@ -49,7 +49,7 @@ Copyright: None
 License: CC0-1.0
 
 # Project file
-Files: *.pro *.prf *.pri *.qrc *CMakeLists.txt *.cmake *.in
+Files: *.pro *.prf *.pri *.qrc *CMakeLists.txt *.cmake *.in VERSION
 Copyright: None
 License: CC0-1.0
 
@@ -58,3 +58,11 @@ Files: src/util/icons/actions/*  src/util/icons/icons/* src/util/icons/texts/*
   src/util/icons/dci/* tests/images/* tests/actions/* tests/dcis/* examples/animation-dci/*
 Copyright: UnionTech Software Technology Co., Ltd.
 License: LGPL-3.0-or-later
+
+Files: toolGenerate/**/*
+Copyright: None
+License: CC0-1.0
+
+Files: src/kernel/orgdeepindtkpreference.hpp
+Copyright: None
+License: CC0-1.0

@@ -1,17 +1,18 @@
-// SPDX-FileCopyrightText: 2022 UnionTech Software Technology Co., Ltd.
+// SPDX-FileCopyrightText: 2022 - 2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-#define private public
 #include <QFont>
-#undef private
 
 #include "dfontmanager.h"
 #include "dfontmanager_p.h"
+#include "util/dprivateaccessor_p.h"
 
 #include <private/qfont_p.h>
 
 #include <cmath>
+
+D_DECLARE_PRIVATE_MEMBER(QFont_d_tag, QFont, d, QExplicitlySharedDataPointer<QFontPrivate>);
 
 DGUI_BEGIN_NAMESPACE
 
@@ -49,7 +50,7 @@ DFontManager::~DFontManager()
   \value T4
   系统级别为 T4 的字体大小, 默认是20 px
   \value T5
-  系统级别为 T5 的字体大小, 默认是17 px
+  系统级别为 T5 的字体大小, 默认是16 px
   \value T6
   系统级别为 T6 的字体大小, 默认是14 px
   \value T7
@@ -60,6 +61,8 @@ DFontManager::~DFontManager()
   系统级别为 T9 的字体大小, 默认是11 px
   \value T10
   系统级别为 T10 的字体大小, 默认是10 px
+  \value T11
+  系统级别为 T11 的字体大小, 默认是8 px
 
   \omitvalue NSizeTypes
  */
@@ -147,6 +150,8 @@ QFont DFontManager::get(int pixelSize, const QFont &base)
 {
     QFont font = base;
     font.setPixelSize(pixelSize);
+    // Ensure that the FamilyResolved flag is set in order for Qt to correctly set fonts
+    font.setFamilies(base.families());
     return font;
 }
 
@@ -155,7 +160,7 @@ int DFontManager::fontPixelSize(const QFont &font)
     int px = font.pixelSize();
 
     if (px == -1) {
-        px = qRound(std::floor(((font.pointSizeF() * font.d->dpi) / 72) * 100 + 0.5) / 100);
+        px = qRound(std::floor(((font.pointSizeF() * D_PRIVATE_MEMBER(font, QFont_d_tag{})->dpi) / 72) * 100 + 0.5) / 100);
     }
 
     return px;

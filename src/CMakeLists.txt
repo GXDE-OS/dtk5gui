@@ -1,3 +1,14 @@
+if("${QT_VERSION_MAJOR}" STREQUAL "6")
+    find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets WaylandClient)
+
+    if (${Qt6Core_VERSION} VERSION_GREATER_EQUAL "6.10.0")
+        set(QT_NO_PRIVATE_MODULE_WARNING ON)
+        find_package(Qt6 REQUIRED COMPONENTS CorePrivate GuiPrivate WaylandClientPrivate)
+    endif()
+else()
+    find_package(Qt5 REQUIRED COMPONENTS WaylandClient XkbCommonSupport)
+endif()
+
 add_library(${LIB_NAME} SHARED)
 
 include(dbus/dbus.cmake)
@@ -5,6 +16,7 @@ include(filedrag/dfiledrag.cmake)
 include(kernel/kernel.cmake)
 include(private/private.cmake)
 include(util/util.cmake)
+include(plugins/plugins.cmake)
 
 target_sources(${LIB_NAME} PRIVATE
     ${dbus_SRC}
@@ -24,17 +36,28 @@ target_include_directories(${LIB_NAME} PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}/util/private>
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include/DtkGui>
 )
+target_include_directories(${LIB_NAME} PRIVATE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_LIST_DIR}>
+)
 
 target_link_libraries(${LIB_NAME}
 PUBLIC
     Qt${QT_VERSION_MAJOR}::Gui
     Qt${QT_VERSION_MAJOR}::Network
-    Dtk${DTK_VERSION_MAJOR}::Core
+    Dtk${DTK_NAME_SUFFIX}::Core
 PRIVATE
     Qt${QT_VERSION_MAJOR}::GuiPrivate
     Qt${QT_VERSION_MAJOR}::CorePrivate
     Qt${QT_VERSION_MAJOR}::DBus
+    Qt${QT_VERSION_MAJOR}::WaylandClientPrivate
 )
+
+if("${QT_VERSION_MAJOR}" STREQUAL "5")
+target_link_libraries(${LIB_NAME}
+PRIVATE
+    Qt${QT_VERSION_MAJOR}::XkbCommonSupportPrivate
+)
+endif()
 
 if(DTK_DISABLE_LIBRSVG)
     find_package(Qt${QT_VERSION_MAJOR}Svg REQUIRED)
@@ -60,8 +83,8 @@ if(NOT DTK_DISABLE_LIBXDG)
 endif()
 
 set_target_properties(${LIB_NAME} PROPERTIES
-    VERSION ${CMAKE_PROJECT_VERSION}
-    SOVERSION ${CMAKE_PROJECT_VERSION_MAJOR}
+    VERSION ${DTK_VERSION}
+    SOVERSION ${DTK_VERSION_MAJOR}
     EXPORT_NAME Gui
 )
 
@@ -73,8 +96,8 @@ target_link_directories(${LIB_NAME} INTERFACE
     $<INSTALL_INTERFACE:${LIBRARY_INSTALL_DIR}>
 )
 
-install(TARGETS ${LIB_NAME} EXPORT Dtk${DTK_VERSION_MAJOR}GuiTargets DESTINATION "${LIBRARY_INSTALL_DIR}")
-install(EXPORT Dtk${DTK_VERSION_MAJOR}GuiTargets NAMESPACE Dtk${DTK_VERSION_MAJOR}:: FILE Dtk${DTK_VERSION_MAJOR}GuiTargets.cmake DESTINATION "${CONFIG_INSTALL_DIR}")
+install(TARGETS ${LIB_NAME} EXPORT Dtk${DTK_NAME_SUFFIX}GuiTargets DESTINATION "${LIBRARY_INSTALL_DIR}")
+install(EXPORT Dtk${DTK_NAME_SUFFIX}GuiTargets NAMESPACE Dtk${DTK_NAME_SUFFIX}:: FILE Dtk${DTK_NAME_SUFFIX}GuiTargets.cmake DESTINATION "${CONFIG_INSTALL_DIR}")
 install(DIRECTORY ../include/util/ DESTINATION "${INCLUDE_INSTALL_DIR}" FILES_MATCHING PATTERN "*")
 install(DIRECTORY ../include/DtkGui/ DESTINATION "${INCLUDE_INSTALL_DIR}" FILES_MATCHING PATTERN "*")
 install(DIRECTORY ../include/global/ DESTINATION "${INCLUDE_INSTALL_DIR}" FILES_MATCHING PATTERN "*")

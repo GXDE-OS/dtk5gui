@@ -8,6 +8,7 @@
 
 #include <QPainter>
 #include <QPixmap>
+#include <QPixmapCache>
 
 #include <private/qhexstring_p.h>
 #include <private/qiconloader_p.h>
@@ -157,6 +158,23 @@ const
 {
     return m_iconName;
 }
+
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+QList<QSize> DDciIconEngine::availableSizes(QIcon::Mode mode, QIcon::State state)
+{
+    Q_UNUSED(state);
+    ensureIconTheme();
+
+    const auto availableSizes = m_dciIcon.availableSizes(dciTheme(), dciMode(mode));
+    QList<QSize> sizes;
+    sizes.reserve(availableSizes.size());
+
+    for (int size : availableSizes)
+        sizes.append(QSize(size, size));
+
+    return sizes;
+}
+#endif
 
 void DDciIconEngine::virtual_hook(int id, void *data)
 {

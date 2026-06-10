@@ -1,12 +1,14 @@
-// SPDX-FileCopyrightText: 2019 - 2023 UnionTech Software Technology Co., Ltd.
+// SPDX-FileCopyrightText: 2019 - 2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
 #include "dguiapplicationhelper.h"
 #include "private/dguiapplicationhelper_p.h"
 #include "dplatformhandle.h"
+
 #include <DFontManager>
 #include <DStandardPaths>
+#include <DSGApplication>
 
 #include <QHash>
 #include <QColor>
@@ -24,6 +26,7 @@
 #include <QDirIterator>
 #include <QDesktopServices>
 #include <QLibraryInfo>
+#include <QTimer>
 
 #ifdef Q_OS_UNIX
 #include <QDBusError>
@@ -33,7 +36,6 @@
 #include <QDBusConnection>
 #include <QDBusConnectionInterface>
 #include <QProcess>
-#include <DConfig>
 #endif
 #include <QDir>
 #include <QLockFile>
@@ -57,8 +59,12 @@
 #include <qpa/qplatformtheme.h>
 
 #ifdef Q_OS_LINUX
+#include <pwd.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
+
+#include "orgdeepindtkpreference.hpp"
 
 #ifdef Q_OS_UNIX
 class EnvReplaceGuard
@@ -109,13 +115,37 @@ Q_LOGGING_CATEGORY(dgAppHelper, "dtk.dguihelper", QtInfoMsg)
 
 Q_GLOBAL_STATIC(QLocalServer, _d_singleServer)
 
-static quint8 _d_singleServerVersion = 1;
+// Protocol changelog:
+//   v1: version + pid + arguments
+//   v2: version + pid + arguments + envs (KEY=VALUE pairs, filtered by whitelist)
+static quint8 _d_singleServerVersion = 2;
 Q_GLOBAL_STATIC(DFontManager, _globalFM)
 
 #define WINDOW_THEME_KEY "_d_platform_theme"
 
-#define APP_THEME_TYPE "themeType"
-Q_GLOBAL_STATIC_WITH_ARGS(DTK_CORE_NAMESPACE::DConfig, _d_dconfig, ("org.deepin.dtk.preference"));
+#define DTK_ANIMATIONS_ENV "D_DTK_DISABLE_ANIMATIONS"
+#define DTK_DISABLE_INWINDOWBLUR_ENV "D_DTK_DISABLE_INWINDOWBLUR"
+Q_GLOBAL_STATIC_WITH_ARGS(OrgDeepinDTKPreference, _d_dconfig, (DTK_CORE_NAMESPACE::DConfig::globalThread(), nullptr,
+                                                               "org.deepin.dtk.preference", DTK_CORE_NAMESPACE::DSGApplication::id(), {}, false, nullptr))
+
+// Keys allowed to be forwarded between single-instance client and server.
+static const QStringList s_singleInstanceForwardEnvKeys = {
+    QStringLiteral("XDG_ACTIVATION_TOKEN")
+};
+
+// Returns a filtered env list in KEY=VALUE format based on the allowed key list.
+static QStringList filteredSingleInstanceEnvs()
+{
+    QStringList result;
+    result.reserve(s_singleInstanceForwardEnvKeys.size());
+    for (const QString &key : s_singleInstanceForwardEnvKeys) {
+        // Use qgetenv directly to avoid constructing a full QProcessEnvironment
+        const QByteArray value = qgetenv(key.toLocal8Bit().constData());
+        if (!value.isNull())
+            result << key + QLatin1Char('=') + QString::fromLocal8Bit(value);
+    }
+    return result;
+}
 
 /*!
  @private
@@ -205,11 +235,18 @@ public:
     }
     virtual bool eventFilter(QObject *watched, QEvent *event) override
     {
+        if (watched != qApp)
+            return QObject::eventFilter(watched, event);
+
         switch(event->type()) {
         case QEvent::ApplicationFontChange: {
             const QFont font(qGuiApp->font());
             m_transmitter->q_func()->fontChanged(font);
         } break;
+        case QEvent::ApplicationPaletteChange: {
+            m_transmitter->onApplicationPaletteChanged();
+            break;
+        }
         default:
             break;
         }
@@ -266,11 +303,10 @@ void DGuiApplicationHelperPrivate::initApplication(QGuiApplication *app)
     app->installEventFilter(new GuiApplicationEventFilter(this, app));
 #else
     q->connect(app, &QGuiApplication::fontChanged, q, &DGuiApplicationHelper::fontChanged);
-#endif
-    // TODO handle event in qt6.
     q->connect(app, &QGuiApplication::paletteChanged, q, [this] {
         onApplicationPaletteChanged();
     });
+#endif
 
     if (Q_UNLIKELY(!appTheme)) { // 此时说明appTheme可能已经被初始化为了systemtheme
         if (QGuiApplicationPrivate::is_app_running) {
@@ -309,7 +345,7 @@ DPlatformTheme *DGuiApplicationHelperPrivate::initWindow(QWindow *window) const
     window->setProperty(WINDOW_THEME_KEY, QVariant::fromValue(theme));
     theme->setParent(window); // 跟随窗口销毁
 
-    auto onWindowThemeChanged = [window, theme, this] {
+    auto onWindowThemeChanged = [window, this] {
         // 如果程序自定义了调色板, 则没有必要再关心窗口自身平台主题的变化
         // 需要注意的是, 这里的信号和事件可能会与 notifyAppThemeChanged 中的重复
         // 但是不能因此而移除这里的通知, 当窗口自身所对应的平台主题发生变化时, 这里
@@ -343,9 +379,18 @@ void DGuiApplicationHelperPrivate::_q_initApplicationTheme(bool notifyChange)
     // 监听与程序主题相关的改变
     QObject::connect(appTheme, &DPlatformTheme::themeNameChanged, app, onAppThemeChanged);
     QObject::connect(appTheme, &DPlatformTheme::paletteChanged, app, onAppThemeChanged);
-    QObject::connect(appTheme, &DPlatformTheme::activeColorChanged, app, [this] {
+    QTimer *timer = new QTimer(app);
+    timer->setInterval(100);
+    timer->setSingleShot(true);
+    QObject::connect(timer, &QTimer::timeout, timer, [this] {
         if (!appPalette)
             notifyAppThemeChanged();
+    });
+    QObject::connect(appTheme, &DPlatformTheme::activeColorChanged, app, [timer]{
+            timer->start();
+    });
+    QObject::connect(appTheme, &DPlatformTheme::darkActiveColorChanged, app, [timer] {
+            timer->start();
     });
 
     // appTheme在此之前可能由systemTheme所代替被使用，此时在创建appTheme
@@ -359,16 +404,23 @@ void DGuiApplicationHelperPrivate::notifyAppThemeChanged()
 {
     D_Q(DGuiApplicationHelper);
     notifyAppThemeChangedByEvent();
-    // 通知主题类型发生变化, 此处可能存在误报的行为, 不过不应该对此做额外的约束
-    // 此信号的行为应当等价于 applicationPaletteChanged
-    Q_EMIT q->themeTypeChanged(q->themeType());
-    // 通知调色板对象的改变
-    Q_EMIT q->applicationPaletteChanged();
+    QMetaObject::invokeMethod(q, [q] () {
+        // 通知主题类型发生变化, 此处可能存在误报的行为, 不过不应该对此做额外的约束
+        // 此信号的行为应当等价于 applicationPaletteChanged
+        Q_EMIT q->themeTypeChanged(q->themeType());
+        // 通知调色板对象的改变
+        Q_EMIT q->applicationPaletteChanged();
+    }, Qt::QueuedConnection);
 }
 
 void DGuiApplicationHelperPrivate::notifyAppThemeChangedByEvent()
 {
+   // https://github.com/qt/qtbase/commit/68a9c5fe513e147e4cffd29b50a4714813df411e
+#if QT_VERSION >= QT_VERSION_CHECK(6, 10, 0)
+    QWindowSystemInterfacePrivate::ThemeChangeEvent event;
+#else
     QWindowSystemInterfacePrivate::ThemeChangeEvent event(nullptr);
+#endif
     // 此事件会促使QGuiApplication重新从QPlatformTheme中获取系统级别的QPalette.
     // 而在deepin平台下, 系统级别的QPalette来源自 \a applicationPalette()
     QGuiApplicationPrivate::processThemeChanged(&event);
@@ -425,19 +477,19 @@ void DGuiApplicationHelperPrivate::initPaletteType() const
         return;
 
     auto applyThemeType = [this](bool emitSignal){
-        int ct = _d_dconfig->value(APP_THEME_TYPE, DGuiApplicationHelper::UnknownType).toInt();
+        int ct = _d_dconfig->themeType();
         if (ct > DGuiApplicationHelper::DarkType || ct < DGuiApplicationHelper::UnknownType)
             ct = DGuiApplicationHelper::UnknownType;
 
         const_cast<DGuiApplicationHelperPrivate *>(this)->setPaletteType(DGuiApplicationHelper::ColorType(ct), emitSignal);
     };
 
-    applyThemeType(false);
+    // 读取配置文件中的主题类型并立即应用
+    DTK_CORE_NAMESPACE::DConfig dconfig("org.deepin.dtk.preference");
+    int ct = dconfig.value("themeType", DGuiApplicationHelper::UnknownType).toInt();
+    const_cast<DGuiApplicationHelperPrivate *>(this)->setPaletteType(DGuiApplicationHelper::ColorType(ct), false);
 
-    QObject::connect(_d_dconfig, &DConfig::valueChanged, _d_dconfig, [applyThemeType](const QString &key){
-        if (key != APP_THEME_TYPE)
-            return;
-
+    QObject::connect(_d_dconfig.operator ()(), &OrgDeepinDTKPreference::themeTypeChanged, _d_dconfig, [applyThemeType] {
         applyThemeType(true);
     });
 }
@@ -485,13 +537,13 @@ DGuiApplicationHelper::SizeMode DGuiApplicationHelperPrivate::fetchSizeMode(bool
 /*!
   \enum DGuiApplicationHelper::ColorType
   DGuiApplicationHelper::ColorType 定义了主题类型.
-  
+
   \var DGuiApplicationHelper::ColorType DGuiApplicationHelper::UnknownType
   未知主题(浅色主题或深色主题)
-  
+
   \var DGuiApplicationHelper::ColorType DGuiApplicationHelper::LightType
   浅色主题
-  
+
   \var DGuiApplicationHelper::ColorType DGuiApplicationHelper::DarkType
   深色主题
  */
@@ -499,28 +551,28 @@ DGuiApplicationHelper::SizeMode DGuiApplicationHelperPrivate::fetchSizeMode(bool
 /*!
   \enum DGuiApplicationHelper::Attribute
   DGuiApplicationHelper::Attribute 定义了功能属性
-  
+
   \var DGuiApplicationHelper::Attribute DGuiApplicationHelper::UseInactiveColorGroup
   如果开启，当窗口处于Inactive状态时就会使用QPalette::Inactive的颜色，否则窗口将没有任何颜色变化。
-  
+
   \var DGuiApplicationHelper::Attribute DGuiApplicationHelper::ColorCompositing
   是否采用半透明样式的调色板。
-  
+
   \var DGuiApplicationHelper::Attribute DGuiApplicationHelper::ReadOnlyLimit
   区分只读枚举。
-  
+
   \var DGuiApplicationHelper::Attribute DGuiApplicationHelper::IsDeepinPlatformTheme
   获取当前是否使用deepin的platformtheme插件，platformtheme插件可以为Qt程序提供特定的控件样式，默认使用chameleon主题。
-  
+
   \var DGuiApplicationHelper::Attribute DGuiApplicationHelper::IsDXcbPlatform
   获取当前使用的是不是dtk的xcb窗口插件，dxcb插件提供了窗口圆角和阴影功能。
-  
+
   \var DGuiApplicationHelper::Attribute DGuiApplicationHelper::IsXWindowPlatform
   获取当前是否运行在X11环境中。
-  
+
   \var DGuiApplicationHelper::Attribute DGuiApplicationHelper::IsTableEnvironment
   获取当前是否运行在deepin平板环境中，检测XDG_CURRENT_DESKTOP环境变量是不是tablet结尾。
-  
+
   \var DGuiApplicationHelper::Attribute DGuiApplicationHelper::IsDeepinEnvironment
   获取当前是否运行在deepin桌面环境中，检测XDG_CURRENT_DESKTOP环境变量是不是deepin。
  */
@@ -748,7 +800,7 @@ static QColor dark_qpalette[QPalette::NColorRoles] {
     QColor("#282828"),                  //Base
     QColor("#252525"),                  //Window
     QColor(0, 0, 0, 0.05 * 255),        //Shadow
-    QColor("#0081ff"),                  //Highlight
+    QColor("#024CCA"),                  //Highlight
     QColor("#F1F6FF"),                  //HighlightedText
     QColor("#0082fa"),                  //Link
     QColor("#ad4579"),                  //LinkVisited
@@ -969,15 +1021,7 @@ void DGuiApplicationHelper::generatePaletteColor(DPalette &base, QPalette::Color
         base.setBrush(QPalette::Disabled, role, window);
         base.setBrush(QPalette::Inactive, role, window);
         return;
-    } else if (role == QPalette::Highlight && toColorType(base) == DarkType) {
-        // 暗色模式下的高亮色亮度要降低10%，避免太突兀
-        QColor highlight = base.highlight().color();
-
-        if (highlight.isValid()) {
-            base.setColor(QPalette::Highlight, adjustColor(highlight, 0, 0, -20, 0, 0, 0, 0));
-        }
     }
-
     generatePaletteColor_helper(base, role, type);
 }
 
@@ -1030,6 +1074,20 @@ void DGuiApplicationHelper::generatePalette(DPalette &base, ColorType type)
     }
 }
 
+static inline QColor getActiveColor(const DPlatformTheme *theme, DGuiApplicationHelper::ColorType type)
+{
+    QColor activeColor;
+    if (type == DGuiApplicationHelper::DarkType) {
+        activeColor = theme->darkActiveColor();
+        if (!activeColor.isValid()) {
+            activeColor = theme->activeColor();
+        }
+    } else {
+        activeColor = theme->activeColor();
+    }
+
+    return activeColor;
+}
 /*!
   \brief 获取调色板数据.
 
@@ -1055,7 +1113,7 @@ DPalette DGuiApplicationHelper::fetchPalette(const DPlatformTheme *theme)
 
     bool ok = false;
     base_palette = theme->fetchPalette(standardPalette(type), &ok);
-    const QColor &active_color = theme->activeColor();
+    const QColor &active_color = getActiveColor(theme, type);
 
     if (active_color.isValid()) {
         base_palette.setColor(QPalette::Normal, QPalette::Highlight, active_color);
@@ -1226,7 +1284,7 @@ DPalette DGuiApplicationHelper::applicationPalette(ColorType paletteType) const
         // 覆盖DPalette中的的QPalette数据
         pa.QPalette::operator =(qGuiApp->palette());
     } else {
-        const QColor &active_color = theme->activeColor();
+        const QColor &active_color = getActiveColor(theme, type);
 
         if (active_color.isValid()) {
             // 应用Active Color
@@ -1308,6 +1366,11 @@ void DGuiApplicationHelper::setApplicationPalette(const DPalette &palette)
  */
 DPalette DGuiApplicationHelper::windowPalette(QWindow *window) const
 {
+#if DTK_VERSION >= DTK_VERSION_CHECK(5, 0, 0, 0)
+    Q_UNUSED(window);
+    qCWarning(dgAppHelper) << "DGuiApplicationHelper::windowPalette is deprecated, please use applicationPalette instead.";
+    return applicationPalette();
+#else
     D_DC(DGuiApplicationHelper);
 
     // 如果程序自定义了调色版, 则不再关心窗口对应的平台主题上的设置
@@ -1322,6 +1385,7 @@ DPalette DGuiApplicationHelper::windowPalette(QWindow *window) const
     }
 
     return fetchPalette(theme);
+#endif
 }
 #endif
 
@@ -1461,11 +1525,37 @@ bool DGuiApplicationHelper::setSingleInstance(const QString &key, DGuiApplicatio
     }
 
     socket_key += key;
+
+#ifdef Q_OS_LINUX
+    auto info = QFileInfo{"/proc/self/ns/pid"};
+    // maybe kernel doesn't support namespace
+    while (info.exists()) {
+      auto pidns = QFileInfo{info.symLinkTarget()}.fileName();
+      if (pidns.isEmpty()) {
+        break;
+      }
+
+      // maybe format has been changed
+      auto start = pidns.indexOf('[');
+      auto end = pidns.indexOf(']');
+      if (start == -1 || end == -1) {
+        break;
+      }
+
+      auto num = pidns.mid(start + 1, end - start - 1);
+
+      // append pid namespace
+      socket_key += QStringLiteral("_%1").arg(num);
+      break;
+    }
+#endif
+
     QString lockfile = socket_key;
     if (!lockfile.startsWith(QLatin1Char('/'))) {
         lockfile = QDir::cleanPath(QDir::tempPath());
         lockfile += QLatin1Char('/') + socket_key;
     }
+
     lockfile += QStringLiteral(".lock");
     static QScopedPointer <QLockFile> lock(new QLockFile(lockfile));
     // 同一个进程多次调用本接口使用最后一次设置的 key
@@ -1488,16 +1578,26 @@ bool DGuiApplicationHelper::setSingleInstance(const QString &key, DGuiApplicatio
         if (socket.waitForConnected(DGuiApplicationHelperPrivate::waitTime) &&
                 socket.waitForReadyRead(DGuiApplicationHelperPrivate::waitTime)) {
             // 读取数据
-            qint8 version;
+            quint8 version;
             qint64 pid;
             QStringList arguments;
+            QStringList envs;
 
             QDataStream ds(&socket);
             ds >> version >> pid >> arguments;
+            // Only read envs field when server supports v2+ protocol
+            if (version >= 2)
+                ds >> envs;
             qCInfo(dgAppHelper) << "Process is started: pid=" << pid << "arguments=" << arguments;
 
+            if (ds.status() != QDataStream::Ok) {
+                qCWarning(dgAppHelper) << "Invalid data received from primary instance, aborting.";
+                return false;
+            }
+
             // 把自己的信息告诉第一个实例
-            ds << _d_singleServerVersion << qApp->applicationPid() << qApp->arguments();
+            ds << _d_singleServerVersion << qApp->applicationPid() << qApp->arguments()
+               << filteredSingleInstanceEnvs();
             socket.flush();
         }
 
@@ -1519,20 +1619,48 @@ bool DGuiApplicationHelper::setSingleInstance(const QString &key, DGuiApplicatio
             QDataStream ds(instance);
             ds << _d_singleServerVersion // 协议版本
                << qApp->applicationPid() // 进程id
-               << qApp->arguments(); // 启动时的参数
+               << qApp->arguments() // 启动时的参数
+               << filteredSingleInstanceEnvs(); // 环境变量（仅转发许可列表中的 key）
 
             QObject::connect(instance, &QLocalSocket::readyRead, qApp, [instance] {
                 // 读取数据
                 QDataStream ds(instance);
 
-                qint8 version;
+                quint8 version;
                 qint64 pid;
                 QStringList arguments;
+                QStringList envs;
 
                 ds >> version >> pid >> arguments;
+                // Only read envs field when client supports v2+ protocol
+                if (version >= 2)
+                    ds >> envs;
                 instance->close();
 
                 qCInfo(dgAppHelper) << "New instance: pid=" << pid << "arguments=" << arguments;
+
+                if (ds.status() != QDataStream::Ok) {
+                    qCWarning(dgAppHelper) << "Invalid data received from new instance, aborting.";
+                    return;
+                }
+
+                // Apply environment variables forwarded from the new client instance.
+                // Only process KEY=VALUE pairs sent by v2+ clients; re-validate each key
+                // against the whitelist to prevent env injection via malformed socket data.
+                if (version >= 2) {
+                    for (const QString &envItem : std::as_const(envs)) {
+                        const int eqPos = envItem.indexOf(QLatin1Char('='));
+                        if (eqPos < 1) // skip entries with no '=' or an empty key
+                            continue;
+                        const QString keyStr = envItem.left(eqPos);
+                        if (!s_singleInstanceForwardEnvKeys.contains(keyStr))
+                            continue; // reject keys not in the whitelist
+                        const QByteArray keyBa = keyStr.toLocal8Bit();
+                        const QByteArray valueBa = envItem.mid(eqPos + 1).toLocal8Bit();
+                        qputenv(keyBa.constData(), valueBa);
+                        qCInfo(dgAppHelper) << "Applied env from new instance:" << keyBa;
+                    }
+                }
 
                 // 通知新进程的信息
                 if (_globalHelper.exists() && _globalHelper->helper())
@@ -1607,6 +1735,28 @@ bool DGuiApplicationHelper::hasUserManual() const
     return userManualPaths(qApp->applicationName()).size() > 0;
 }
 
+static inline QStringList translateDirs(const QString &appName)
+{
+    Q_ASSERT(!appName.isEmpty());
+
+    QStringList dirs;
+
+    DCORE_USE_NAMESPACE
+    //("/home/user/.local/share", "/usr/local/share", "/usr/share")
+    auto dataDirs = DStandardPaths::standardLocations(QStandardPaths::GenericDataLocation);
+    for (const auto &path : dataDirs) {
+        DPathBuf pathBuf(path);
+        dirs << (pathBuf / appName / "translations").toString();
+    }
+
+    return dirs;
+}
+
+bool DGuiApplicationHelper::loadTranslator(const QString &fileName, const QString &appName, const QList<QLocale> &localeFallback)
+{
+    return loadTranslator(fileName, translateDirs(appName), localeFallback);
+}
+
 bool DGuiApplicationHelper::loadTranslator(const QString &fileName, const QList<QString> &translateDirs, const QList<QLocale> &localeFallback)
 {
     DCORE_USE_NAMESPACE;
@@ -1619,40 +1769,30 @@ bool DGuiApplicationHelper::loadTranslator(const QString &fileName, const QList<
     for (auto item : defaultDirPrefix)
         dirs << item.join("translations").toString();
 
-    QStringList missingQmfiles;
     for (const auto &locale : localeFallback) {
-        QStringList translateFilenames {QString("%1_%2").arg(fileName).arg(locale.name())};
-#if QT_VERSION >= QT_VERSION_CHECK(5, 14, 0)
-        auto behavior = Qt::SkipEmptyParts;
-#else
-        auto behavior = QString::SkipEmptyParts;
-#endif
-        const QStringList parseLocalNameList = locale.name().split("_", behavior);
-        if (parseLocalNameList.length() > 0)
-            translateFilenames << QString("%1_%2").arg(fileName).arg(parseLocalNameList.at(0));
-
-        for (const auto &translateFilename : translateFilenames) {
-            for (const auto &dir : dirs) {
-                DPathBuf path(dir);
-                QString translatePath = (path / translateFilename).toString();
-                if (QFile::exists(translatePath + ".qm")) {
-                    qDebug() << "load translate" << translatePath;
-                    auto translator = new QTranslator(qApp);
-                    translator->load(translatePath);
-                    qApp->installTranslator(translator);
-                    qApp->setProperty("dapp_locale", locale.name());
-                    return true;
-                }
+        for (const auto &dir : dirs) {
+            auto translator = new QTranslator(qApp);
+            // QTranslator::load(locale, filename, prefix, directory, suffix) automatically handles
+            // locale fallback (e.g., zh_CN -> zh -> C) and file existence checking
+            if (translator->load(locale, fileName, QString('_'), dir)) {
+                qCDebug(dgAppHelper) << "load translate" << fileName << "for locale" << locale.name() << "from" << dir;
+                qApp->installTranslator(translator);
+                qApp->setProperty("dapp_locale", locale.name());
+                return true;
             }
-
-            // fix english does not need to translation.
-            if (locale.language() != QLocale::English)
-                missingQmfiles << translateFilename + ".qm";
+            delete translator; // Clean up if loading failed
         }
     }
 
-    if (missingQmfiles.size() > 0) {
-        qWarning() << fileName << "can not find qm files" << missingQmfiles;
+    // Collect locale names for warning message
+    QStringList localeNames;
+    for (const auto &locale : localeFallback) {
+        if (locale.language() != QLocale::English) // English does not need translation
+            localeNames << locale.name();
+    }
+
+    if (!localeNames.isEmpty()) {
+        qWarning() << fileName << "can not find qm files for locales" << localeNames;
     }
     return false;
 }
@@ -1664,21 +1804,18 @@ bool DGuiApplicationHelper::loadTranslator(const QList<QLocale> &localeFallback)
 #else
     auto qTranslationsPath = QLibraryInfo::path(QLibraryInfo::TranslationsPath);
 #endif
-    loadTranslator("qt", {qTranslationsPath}, localeFallback);
-    loadTranslator("qtbase", {qTranslationsPath}, localeFallback);
 
     DCORE_USE_NAMESPACE
-    QList<QString> translateDirs;
-    auto appName = qApp->applicationName();
     //("/home/user/.local/share", "/usr/local/share", "/usr/share")
-    auto dataDirs = DStandardPaths::standardLocations(QStandardPaths::GenericDataLocation);
-    for (const auto &path : dataDirs) {
-        DPathBuf DPathBuf(path);
-        translateDirs << (DPathBuf / appName / "translations").toString();
-    }
+    auto qtranslateDirs = translateDirs("qt" QT_STRINGIFY(QT_VERSION_MAJOR));
+    qtranslateDirs.prepend(qTranslationsPath);
 
-    // ${translateDir}/${appName}_${localeName}.qm
-    return loadTranslator(appName, translateDirs, localeFallback);
+    loadTranslator("qt", qtranslateDirs, localeFallback);
+    loadTranslator("qtbase", qtranslateDirs, localeFallback);
+
+    auto appName = qApp->applicationName();
+
+    return loadTranslator(appName, appName, localeFallback);
 }
 
 DGuiApplicationHelper::SizeMode DGuiApplicationHelper::sizeMode() const
@@ -1739,6 +1876,24 @@ bool DGuiApplicationHelper::testAttribute(DGuiApplicationHelper::Attribute attri
     case IsSpecialEffectsEnvironment: {
         return qgetenv("DTK_DISABLED_SPECIAL_EFFECTS").toInt() != 1;
     }
+    case IsWaylandPlatform: {
+        static bool isTreeland = qApp->platformName() == QByteArrayLiteral("wayland");
+        return isTreeland;
+    }
+    case HasAnimations: {
+        static bool isDisable = qEnvironmentVariableIsSet(DTK_ANIMATIONS_ENV);
+        if (isDisable)
+            return false;
+
+        return _d_dconfig->enableDtkAnimations();
+    }
+    case HasInWindowBlur: {
+        static bool isDisable = qEnvironmentVariableIsSet(DTK_DISABLE_INWINDOWBLUR_ENV);
+        if (isDisable)
+            return false;
+
+        return !_d_dconfig->disableInWindowBlur();
+    }
     default:
         return DGuiApplicationHelperPrivate::attributes.testFlag(attribute);
     }
@@ -1778,7 +1933,8 @@ void DGuiApplicationHelper::setPaletteType(DGuiApplicationHelper::ColorType pale
 
     d->initPaletteType();
     d->setPaletteType(paletteType, true);
-    _d_dconfig->setValue(APP_THEME_TYPE, paletteType);
+    if (!DGuiApplicationHelper::testAttribute(DGuiApplicationHelper::DontSaveApplicationTheme))
+        _d_dconfig->setThemeType(static_cast<int>(paletteType));
 }
 
 /*!

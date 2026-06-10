@@ -5,9 +5,15 @@
 #ifndef DPLATFORMTHEME_P_H
 #define DPLATFORMTHEME_P_H
 
+#include "private/dplatforminterface_p.h"
 #include "dplatformtheme.h"
 #include "dnativesettings_p.h"
 
+#include <dguiapplicationhelper.h>
+
+class OrgDeepinDTKPreference;
+
+DCORE_USE_NAMESPACE
 DGUI_BEGIN_NAMESPACE
 
 class DPlatformThemePrivate : public DNativeSettingsPrivate
@@ -18,7 +24,6 @@ public:
 
     // 接收parent主题或非调色板DNativeSettings对象（theme对象）的属性变化通知
     // 调色板相关的属性变化与此无关
-    void _q_onThemePropertyChanged(const QByteArray &name, const QVariant &value);
     void onQtColorChanged(QPalette::ColorRole role, const QColor &color);
     void onDtkColorChanged(DPalette::ColorType type, const QColor &color);
     void notifyPaletteChanged();
@@ -34,6 +39,12 @@ public:
     DPalette *palette = nullptr;
     // 减少调色板changed信号的通知频率
     QTimer *notifyPaletteChangeTimer = nullptr;
+    OrgDeepinDTKPreference *dtkPreferenceConfig = nullptr;
+
+    DPlatformInterface *platformInterface = nullptr;
+
+    DGuiApplicationHelper::SizeMode sizeMode = DGuiApplicationHelper::NormalMode;
+    Qt::ScrollBarPolicy scrollBarPolicy = Qt::ScrollBarAsNeeded;
 };
 
 DGUI_END_NAMESPACE

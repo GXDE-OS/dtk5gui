@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2022 - 2023 UnionTech Software Technology Co., Ltd.
+// SPDX-FileCopyrightText: 2022 - 2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
@@ -12,17 +12,29 @@
 #include <QPainter>
 #include <QPalette>
 #include <QGuiApplication>
+#include <DSvgRenderer>
 
 #include <cxxabi.h>
 #include <qmath.h>
 #if XDG_ICON_VERSION_MAR >= 3
-#define private public
 #include <private/xdgiconloader/xdgiconloader_p.h>
-#undef private
+#include "util/dprivateaccessor_p.h"
+
+D_DECLARE_PRIVATE_CONST_METHOD(XdgIconLoader_followColorScheme_tag, XdgIconLoader, followColorScheme, bool);
+D_DECLARE_PRIVATE_METHOD(XdgIconLoaderEngine_ensureLoaded_tag, XdgIconLoaderEngine, ensureLoaded, void);
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+D_DECLARE_PRIVATE_METHOD(XdgIconLoaderEngine_virtualHook_tag, XdgIconLoaderEngine, virtual_hook, void, int, void *);
+#endif
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+D_DECLARE_PRIVATE_METHOD(XdgIconLoaderEngine_entryForSize_tag, XdgIconLoaderEngine, entryForSize, QIconLoaderEngineEntry *, const QSize &, int);
+#else
+D_DECLARE_PRIVATE_MEMBER(XdgIconLoaderEngine_m_info_tag, XdgIconLoaderEngine, m_info, QThemeIconInfo);
+D_DECLARE_PRIVATE_METHOD(XdgIconLoaderEngine_entryForSize_tag, XdgIconLoaderEngine, entryForSize, QIconLoaderEngineEntry *, const QThemeIconInfo &, const QSize &, int);
+#endif
 
 static inline bool XdgIconFollowColorScheme()
 {
-    return XdgIconLoader::instance()->followColorScheme();
+    return D_PRIVATE_CALL(*XdgIconLoader::instance(), XdgIconLoader_followColorScheme_tag{});
 }
 
 static inline QString rgba(const QColor &c)
@@ -59,6 +71,41 @@ static inline QPixmap entryPixmap(ScalableEntry *color_entry, const QSize &size,
             return d->engine->pixmap(size, mode, state);
 
     return color_entry->svgIcon.pixmap(size, mode, state);
+}
+
+// Render a scalable SVG entry using DSvgRenderer (backed by librsvg) when available.
+//
+// This is a workaround for a long-standing Qt SVG rendering bug: QSvgRenderer
+// incorrectly renders <clipPath>, <mask>, and <filter> elements that appear as
+// direct children of the root <svg> element (outside any <defs> block) as visible
+// painted shapes. This causes icons that use such constructs (e.g., many GNOME app
+// icons like Epiphany) to render with opaque black backgrounds instead of transparent
+// corners.
+//
+// DSvgRenderer uses librsvg via cairo when available, which handles these SVG
+// features correctly. If librsvg is not installed, DSvgRenderer::isValid() returns
+// false and we fall back gracefully to the default Qt rendering path (entryPixmap),
+// preserving existing behavior on systems without librsvg.
+static QPixmap renderSvgWithLibrsvg(ScalableEntry *entry, const QSize &size,
+                                     QIcon::Mode mode, QIcon::State state)
+{
+    DGUI_USE_NAMESPACE
+    DSvgRenderer renderer(entry->filename);
+    if (renderer.isValid()) {
+        QSize actualSize = renderer.defaultSize();
+        if (!size.isEmpty() && !actualSize.isEmpty()) {
+            if (actualSize.width() < size.width())
+                actualSize.scale(size, Qt::KeepAspectRatio);
+        }
+        if (!actualSize.isEmpty()) {
+            const QImage img = renderer.toImage(actualSize);
+            if (!img.isNull())
+                return QPixmap::fromImage(
+                    img.scaled(size, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        }
+    }
+    // librsvg unavailable or rendering failed — fall back to QIcon-based path
+    return entryPixmap(entry, size, mode, state);
 }
 
 static const QString STYLE = QStringLiteral(".ColorScheme-Text, .ColorScheme-NeutralText{color:%1;}\
@@ -186,16 +233,30 @@ QPixmap XdgIconProxyEngine::followColorPixmap(ScalableEntry *color_entry, const 
 
 QPixmap XdgIconProxyEngine::pixmapByEntry(QIconLoaderEngineEntry *entry, const QSize &size, QIcon::Mode mode, QIcon::State state)
 {
+    char *type_name = abi::__cxa_demangle(typeid(*entry).name(), 0, 0, 0);
+    // ScalableFollowsColorEntry is a subclass of ScalableEntry but its mangled name
+    // does NOT contain the substring "ScalableEntry", so the contains() check below
+    // correctly distinguishes between the two types.
+    const bool isScalableFollowsColor = (type_name == QByteArrayLiteral("ScalableFollowsColorEntry"));
+    const bool isScalable = isScalableFollowsColor || QByteArray(type_name).contains("ScalableEntry");
+    free(type_name);
+
     if (!XdgIconFollowColorScheme()) {
         DEEPIN_XDG_THEME::colorScheme.setLocalData(DEEPIN_XDG_THEME::PALETTE_MAP());
 
+        if (isScalable)
+            return renderSvgWithLibrsvg(static_cast<ScalableEntry *>(entry), size, mode, state);
+
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 1)
+        return entry->pixmap(size, mode, state, 1.0);
+#else
         return entry->pixmap(size, mode, state);
+#endif
     }
 
     QPixmap pixmap;
-    char *type_name = abi::__cxa_demangle(typeid(*entry).name(), 0, 0, 0);
 
-    if (type_name == QByteArrayLiteral("ScalableFollowsColorEntry")) {
+    if (isScalableFollowsColor) {
         if (DEEPIN_XDG_THEME::colorScheme.localData().isEmpty()) {
             const QPalette &pal = palette(&pixmap);
             DEEPIN_XDG_THEME::colorScheme.setLocalData(DEEPIN_XDG_THEME::PALETTE_MAP({
@@ -205,11 +266,18 @@ QPixmap XdgIconProxyEngine::pixmapByEntry(QIconLoaderEngineEntry *entry, const Q
         }
 
         pixmap = followColorPixmap(static_cast<ScalableEntry *>(entry), size, mode, state);
+    } else if (isScalable) {
+        // Regular scalable SVG entry (no color scheme) — use DSvgRenderer (librsvg)
+        // to avoid Qt's QSvgRenderer bug with <clipPath> outside <defs>.
+        pixmap = renderSvgWithLibrsvg(static_cast<ScalableEntry *>(entry), size, mode, state);
     } else {
+#if QT_VERSION >= QT_VERSION_CHECK(6, 8, 1)
+        pixmap = entry->pixmap(size, mode, state, 1.0);
+#else
         pixmap = entry->pixmap(size, mode, state);
+#endif
     }
 
-    free(type_name);
     DEEPIN_XDG_THEME::colorScheme.setLocalData(DEEPIN_XDG_THEME::PALETTE_MAP());
 
     return pixmap;
@@ -242,11 +310,11 @@ void XdgIconProxyEngine::paint(QPainter *painter, const QRect &rect, QIcon::Mode
 
 QPixmap XdgIconProxyEngine::pixmap(const QSize &size, QIcon::Mode mode, QIcon::State state)
 {
-    engine->ensureLoaded();
+    D_PRIVATE_CALL(*engine, XdgIconLoaderEngine_ensureLoaded_tag{});
 #if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-    QIconLoaderEngineEntry *entry = engine->entryForSize(size);
+    QIconLoaderEngineEntry *entry = D_PRIVATE_CALL(*engine, XdgIconLoaderEngine_entryForSize_tag{}, size, 1);
 #else
-    QIconLoaderEngineEntry *entry = engine->entryForSize(engine->m_info ,size);
+    QIconLoaderEngineEntry *entry = D_PRIVATE_CALL(*engine, XdgIconLoaderEngine_entryForSize_tag{}, D_PRIVATE_MEMBER(*engine, XdgIconLoaderEngine_m_info_tag{}), size, 1);
 #endif
 
     if (!entry) {
@@ -293,20 +361,39 @@ bool XdgIconProxyEngine::write(QDataStream &out) const
     return engine->write(out);
 }
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+bool XdgIconProxyEngine::isNull()
+{
+    if (engine->isNull())
+        return true;
+    // Entries from XdgIconLoader::unthemedFallback() (e.g. /usr/share/pixmaps)
+    // have a default-constructed QIconDirInfo with dir.size == 0. These entries
+    // cannot be rendered correctly by XdgIconProxyEngine, so treat the engine as
+    // null when all entries originate from the unthemed fallback. The caller
+    // (DIconProxyEngine) will then use Qt's native QIconLoaderEngine which handles
+    // pixmap-only icons correctly.
+    for (const auto &entry : D_PRIVATE_MEMBER(*engine, XdgIconLoaderEngine_m_info_tag{}).entries) {
+        if (entry->dir.size > 0)
+            return false;
+    }
+    return true;
+}
+#endif
+
 void XdgIconProxyEngine::virtual_hook(int id, void *data)
 {
 #if QT_VERSION >= QT_VERSION_CHECK(5, 9, 0)
     if (id == QIconEngine::ScaledPixmapHook) {
-        engine->ensureLoaded();
+        D_PRIVATE_CALL(*engine, XdgIconLoaderEngine_ensureLoaded_tag{});
 
         QIconEngine::ScaledPixmapArgument &arg = *reinterpret_cast<QIconEngine::ScaledPixmapArgument *>(data);
         // QIcon::pixmap() multiplies size by the device pixel ratio.
         const int integerScale = qCeil(arg.scale);
         
 #if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
-        QIconLoaderEngineEntry *entry = engine->entryForSize(arg.size / integerScale, integerScale);
+        QIconLoaderEngineEntry *entry = D_PRIVATE_CALL(*engine, XdgIconLoaderEngine_entryForSize_tag{}, arg.size / integerScale, integerScale);
 #else
-        QIconLoaderEngineEntry *entry = engine->entryForSize(engine->m_info, arg.size / integerScale, integerScale);
+        QIconLoaderEngineEntry *entry = D_PRIVATE_CALL(*engine, XdgIconLoaderEngine_entryForSize_tag{}, D_PRIVATE_MEMBER(*engine, XdgIconLoaderEngine_m_info_tag{}), arg.size / integerScale, integerScale);
 #endif
         // 先禁用缩放，因为此size是已经缩放过的
         bool useHighDpiPixmap = qGuiApp->testAttribute(Qt::AA_UseHighDpiPixmaps);
@@ -319,7 +406,11 @@ void XdgIconProxyEngine::virtual_hook(int id, void *data)
     }
 #endif
 
-    return engine->virtual_hook(id, data);
+#if QT_VERSION < QT_VERSION_CHECK(6, 0, 0)
+    return D_PRIVATE_CALL(*engine, XdgIconLoaderEngine_virtualHook_tag{}, id, data);
+#else
+    engine->virtual_hook(id, data);
+#endif
 }
 
 DGUI_END_NAMESPACE

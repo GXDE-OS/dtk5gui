@@ -598,6 +598,8 @@ void DDciIconPrivate::loadIconList()
             node.entries << icon;
             node.maxPaddings = qMax(node.maxPaddings, icon->maxPaddings);
         }
+        if (node.entries.isEmpty())
+            continue;
         icons << std::move(node);
     }
 }
@@ -646,7 +648,7 @@ DDciIconEntry *DDciIconPrivate::tryMatchIcon(int iconSize, DDciIcon::Theme theme
     }
 
     const auto targetIcon = std::max_element(iconWeight.constBegin(), iconWeight.constEnd());
-    if (*targetIcon > 0)
+    if (targetIcon != iconWeight.constEnd() && *targetIcon > 0)
         return listOfSize.entries.at(targetIcon - iconWeight.constBegin());
     return nullptr;
 }
@@ -656,7 +658,11 @@ static const DDciIconEntry::ScalableLayer &findScalableLayer(const DDciIconEntry
     const DDciIconEntry::ScalableLayer *maxLayer = nullptr;
     const int imagePixelRatio = qCeil(devicePixelRatio);
 
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    for (const auto &i : std::as_const(entry->scalableLayers)) {
+#else
     for (const auto &i : qAsConst(entry->scalableLayers)) {
+#endif
         if (!maxLayer || i.imagePixelRatio > maxLayer->imagePixelRatio)
             maxLayer = &i;
         if (i.imagePixelRatio > imagePixelRatio)
@@ -850,7 +856,7 @@ QList<int> DDciIcon::availableSizes(DDciIcon::Theme theme, DDciIcon::Mode mode) 
     return sizes;
 }
 
-bool DDciIcon::isSupportedAttribute(DDciIconMatchResult result, IconAttibute attr) const
+bool DDciIcon::isSupportedAttribute(DDciIconMatchResult result, IconAttribute attr) const
 {
     switch (attr) {
     case HasPalette:
@@ -862,7 +868,7 @@ bool DDciIcon::isSupportedAttribute(DDciIconMatchResult result, IconAttibute att
     return false;
 }
 
-bool DDciIcon::isSupportedAttribute(const DDciIconImage &image, IconAttibute attr)
+bool DDciIcon::isSupportedAttribute(const DDciIconImage &image, IconAttribute attr)
 {
     if (image.isNull())
         return false;
@@ -1135,7 +1141,11 @@ int DDciIconImage::currentImageNumber() const
 void DDciIconImagePrivate::init()
 {
     readers.reserve(layers.size());
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+    for (const auto &layer : std::as_const(layers)) {
+#else
     for (const auto &layer : qAsConst(layers)) {
+#endif
         ReaderData *data = new ReaderData;
         Q_ASSERT(data);
         auto buffer = new QBuffer();

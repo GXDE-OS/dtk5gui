@@ -6,6 +6,7 @@
 #include "private/dbuiltiniconengine_p.h"
 #include "private/dciiconengine_p.h"
 #include "private/diconproxyengine_p.h"
+#include <private/qicon_p.h>
 #ifndef DTK_DISABLE_LIBXDG
 #include "private/xdgiconproxyengine_p.h"
 #else
@@ -125,12 +126,12 @@ bool DIconTheme::isBuiltinIcon(const QIcon &icon)
 
 bool DIconTheme::isXdgIcon(const QIcon &icon)
 {
-#ifdef DTK_DISABLE_LIBXDG
-    return false;
-#else
     if (icon.isNull())
         return false;
 
+#ifdef DTK_DISABLE_LIBXDG
+    return false;
+#else
     QIconEngine *engine = const_cast<QIcon &>(icon).data_ptr()->engine;
     if (auto proxyEngine = dynamic_cast<DIconProxyEngine *>(engine))
         return !proxyEngine->proxyKey().compare("XdgIconProxyEngine");

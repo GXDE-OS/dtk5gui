@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2022 UnionTech Software Technology Co., Ltd.
+// SPDX-FileCopyrightText: 2022 - 2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
@@ -59,7 +59,11 @@ public:
         IsXWindowPlatform        = ReadOnlyLimit << 2,
         IsTableEnvironment       = ReadOnlyLimit << 3,
         IsDeepinEnvironment      = ReadOnlyLimit << 4,
-        IsSpecialEffectsEnvironment = ReadOnlyLimit << 5
+        IsSpecialEffectsEnvironment = ReadOnlyLimit << 5,
+        IsWaylandPlatform       = ReadOnlyLimit << 6,
+        IsTreelandPlatform Q_DECL_ENUMERATOR_DEPRECATED_X("Use DGuiApplicationHelper::IsWaylandPlatform instead") = IsWaylandPlatform,
+        HasAnimations            = ReadOnlyLimit << 7,
+        HasInWindowBlur          = ReadOnlyLimit << 8,
     };
     Q_ENUM(Attribute)
     Q_DECLARE_FLAGS(Attributes, Attribute)
@@ -121,6 +125,7 @@ public:
     static QStringList userManualPaths(const QString &appName);
     bool hasUserManual() const;
 
+    static bool loadTranslator(const QString &fileName, const QString &appName, const QList<QLocale> &localeFallback = QList<QLocale>() << QLocale::system());
     static bool loadTranslator(const QString &fileName, const QList<QString> &translateDirs, const QList<QLocale> &localeFallback);
     static bool loadTranslator(const QList<QLocale> &localeFallback = QList<QLocale>() << QLocale::system());
 

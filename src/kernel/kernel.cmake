@@ -8,3 +8,8 @@ set(kernel_SRC
   ${KERNEL_HEADER}
   ${KERNEL_SOURCE}
 )
+
+dtk_add_config_to_cpp(kernel_SRC /usr/share/dsg/configs/org.deepin.dtk.preference.json
+  OUTPUT_FILE_NAME orgdeepindtkpreference.hpp
+  CLASS_NAME OrgDeepinDTKPreference
+)

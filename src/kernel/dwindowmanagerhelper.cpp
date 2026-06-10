@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2022 UnionTech Software Technology Co., Ltd.
+// SPDX-FileCopyrightText: 2022 - 2026 UnionTech Software Technology Co., Ltd.
 //
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
@@ -23,6 +23,14 @@
 #include <qpa/qplatformnativeinterface.h>
 
 #include <functional>
+
+#ifndef DTK_DISABLE_TREELAND
+#include "plugins/platform/treeland/dtreelandwindowmanagerhelper.h"
+#include <private/qguiapplication_p.h>
+#include <private/qwaylandwindow_p.h>
+#include <private/qwaylandshellsurface_p.h>
+#include <private/qwaylandintegration_p.h>
+#endif
 
 DGUI_BEGIN_NAMESPACE
 
@@ -110,6 +118,11 @@ public:
 
     mutable QList<DForeignWindow *> windowList;
 };
+
+// TODO abstract an interface to adapt to various WM.
+#ifndef DTK_DISABLE_TREELAND
+Q_GLOBAL_STATIC(TreelandWindowManagerHelper, treelandWMHGlobal)
+#endif
 
 class DWindowManagerHelper_ : public DWindowManagerHelper {};
 Q_GLOBAL_STATIC(DWindowManagerHelper_, wmhGlobal)
@@ -323,6 +336,11 @@ DWindowManagerHelper::~DWindowManagerHelper()
  */
 DWindowManagerHelper *DWindowManagerHelper::instance()
 {
+#ifndef DTK_DISABLE_TREELAND
+    if (DGuiApplicationHelper::testAttribute(DGuiApplicationHelper::IsWaylandPlatform)) {
+        return treelandWMHGlobal;
+    }
+#endif
     return wmhGlobal;
 }
 
@@ -510,6 +528,20 @@ void DWindowManagerHelper::setWmClassName(const QByteArray &name)
  */
 void DWindowManagerHelper::popupSystemWindowMenu(const QWindow *window)
 {
+#ifndef DTK_DISABLE_TREELAND
+    if (DGuiApplicationHelper::testAttribute(DGuiApplicationHelper::IsWaylandPlatform)) {
+        if (window && window->handle()) {
+            if (auto *wlWindow = dynamic_cast<QtWaylandClient::QWaylandWindow*>(window->handle())) {
+                if (auto *shellSurface = wlWindow->shellSurface()) {
+                    auto *wlIntegration = static_cast<QtWaylandClient::QWaylandIntegration*>(
+                        QGuiApplicationPrivate::platformIntegration());
+                    shellSurface->showWindowMenu(wlIntegration->display()->defaultInputDevice());
+                }
+            }
+        }
+        return;
+    }
+#endif
     return callPlatformFunction<void, void(*)(quint32)>(_popupSystemWindowMenu, quint32(window->handle()->winId()));
 }
 
@@ -519,6 +551,11 @@ void DWindowManagerHelper::popupSystemWindowMenu(const QWindow *window)
  */
 bool DWindowManagerHelper::hasBlurWindow() const
 {
+#ifndef DTK_DISABLE_TREELAND
+    if (DGuiApplicationHelper::testAttribute(DGuiApplicationHelper::IsWaylandPlatform)) {
+        return treelandWMHGlobal->hasBlurWindow();
+    }
+#endif
     return callPlatformFunction<bool, bool(*)()>(_hasBlurWindow);
 }
 
@@ -528,6 +565,12 @@ bool DWindowManagerHelper::hasBlurWindow() const
  */
 bool DWindowManagerHelper::hasComposite() const
 {
+#ifndef DTK_DISABLE_TREELAND
+    if (DGuiApplicationHelper::testAttribute(DGuiApplicationHelper::IsWaylandPlatform)) {
+        return treelandWMHGlobal->hasComposite();
+    }
+#endif
+
     QFunctionPointer hasComposite = Q_NULLPTR;
 
 #if QT_VERSION >= QT_VERSION_CHECK(5, 4, 0)
@@ -557,6 +600,11 @@ bool DWindowManagerHelper::hasComposite() const
  */
 bool DWindowManagerHelper::hasNoTitlebar() const
 {
+#ifndef DTK_DISABLE_TREELAND
+    if (DGuiApplicationHelper::testAttribute(DGuiApplicationHelper::IsWaylandPlatform)) {
+        return treelandWMHGlobal->hasNoTitlebar();
+    }
+#endif
     return callPlatformFunction<bool, bool(*)()>(_hasNoTitlebar);
 }
 
