@@ -1,5 +1,5 @@
 # Maintainer: justforlxz <justforlxz@gmail.com>
-pkgname=dtkgui-git
+pkgname=gxde-dtkgui
 pkgver=6.7.43
 pkgrel=1
 pkgdesc='Deepin Toolkit, gui module for DDE look and feel'
@@ -8,10 +8,11 @@ url="https://github.com/GXDE-OS/dtk5gui"
 license=('LGPL-3.0-or-later')
 # 需要 dtkcommon 6.7.43 的 disableInWindowBlur 配置项；librsvg 由 QLibrary 在运行时加载
 # Needs the disableInWindowBlur key from dtkcommon 6.7.43; librsvg is loaded at runtime via QLibrary.
-depends=('dtkcore-git' 'dtkcommon-git>=6.7.43' 'qt5-base' 'qt5-wayland' 'libqt5xdg' 'librsvg' 'glib2' 'libx11')
+depends=('gxde-dtkcore' 'gxde-dtkcommon>=6.7.43' 'qt5-base' 'qt5-wayland' 'libqt5xdg' 'librsvg' 'glib2' 'libx11')
 makedepends=('git' 'cmake' 'ninja' 'qt5-tools' 'extra-cmake-modules' 'treeland-protocols')
-provides=("dtkgui=$pkgver")
-conflicts=('dtkgui')
+provides=("dtkgui=$pkgver" "dtkgui-git=$pkgver")
+conflicts=('dtkgui' 'dtkgui-git')
+replaces=('dtkgui-git')
 groups=('deepin-git')
 source=()
 sha512sums=()
